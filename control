@@ -1,0 +1,9 @@
+Package: com.catling.istayawake
+Name: istayawake
+Depends: mobilesubstrate
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Keeps CPU awake and Wi-Fi active 24/7 to prevent SSH and background processes from sleeping.
+Maintainer: Cat-Ling
+Author: Cat-Ling
+Section: Utilities

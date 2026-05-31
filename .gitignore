@@ -1,0 +1,21 @@
+# Theos Build Artifacts
+.theos/
+obj/
+packages/
+debs/
+_build/
+
+# Compilation Artifacts
+*.deb
+*.dylib
+*.log
+
+# OS-specific Files
+.DS_Store
+Thumbs.db
+
+# Exclude sibling project — tracked separately
+ikillota/
+
+# Example repos (cloned for reference only)
+wifiawake/examples/

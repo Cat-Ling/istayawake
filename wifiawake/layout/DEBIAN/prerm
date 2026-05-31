@@ -1,0 +1,10 @@
+#!/bin/sh
+# prerm — runs on the iPhone before dpkg removes the package
+
+PLIST=/Library/LaunchDaemons/com.catling.wifiawake.plist
+
+launchctl unload "$PLIST" 2>/dev/null || true
+pkill -f "wifiawake" 2>/dev/null || true
+pkill -f "caffeinate" 2>/dev/null || true
+
+echo "[wifiawake] Daemon stopped and unloaded."

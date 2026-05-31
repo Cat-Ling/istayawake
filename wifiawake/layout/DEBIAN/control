@@ -1,0 +1,9 @@
+Package: com.catling.wifiawake
+Name: wifiawake
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Prevents iOS from sleeping the WiFi radio when the screen is off. Keeps SSH reachable indefinitely by periodically pinging the gateway and re-applying power-save sysctl tunables.
+Maintainer: Cat-Ling
+Author: Cat-Ling
+Section: Utilities
+Priority: optional

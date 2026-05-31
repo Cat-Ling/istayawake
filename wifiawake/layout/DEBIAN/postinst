@@ -1,0 +1,26 @@
+#!/bin/sh
+# postinst — runs on the iPhone after dpkg installs wifiawake
+
+set -e
+
+SCRIPT=/usr/local/bin/wifiawake
+PLIST=/Library/LaunchDaemons/com.catling.wifiawake.plist
+LABEL=com.catling.wifiawake
+
+chmod 755 "$SCRIPT"
+chown root:wheel "$SCRIPT" "$PLIST"
+chmod 644 "$PLIST"
+
+# Reload the gateway-ping daemon
+launchctl unload "$PLIST" 2>/dev/null || true
+launchctl load -w "$PLIST"
+
+# Respring SpringBoard so the injected dylib takes effect immediately
+if [ -x /usr/bin/sbreload ]; then
+    /usr/bin/sbreload
+elif killall -0 SpringBoard 2>/dev/null; then
+    killall -9 SpringBoard
+fi
+
+echo "[wifiawake] Installed. SSH should now stay reachable indefinitely."
+echo "[wifiawake] Gateway ping log: /var/log/wifiawake.log"

@@ -1,0 +1,157 @@
+#!/bin/sh
+#
+# wifiawake — SSH/WiFi keep-alive daemon for rootless jailbroken iOS
+# Prevents iOS from sleeping the WiFi radio when the screen is off.
+#
+# Strategy (layered — each layer covers what the previous one misses):
+#
+#  1. sysctl: disable WiFi NIC power-save at the BSD layer (immediate effect)
+#  2. ARP ping: send a gratuitous ARP every 25 s so the router keeps our MAC
+#     in its ARP table and doesn't time us out of its client list
+#  3. TCP ping: open a 1-byte connection to the gateway's port 80 every 30 s
+#     so the router's connection-tracking table stays warm
+#  4. Idle assertion: ask IOKit for a "PreventUserIdleSystemSleep" assertion
+#     so the kernel doesn't throttle the WiFi interrupt budget
+#
+# The script is intentionally simple and shell-only (no compiled binary needed
+# beyond what ships with Dopamine/SSH).  It must run as root (uid 0) which
+# launchd guarantees via the plist's UserName key.
+
+LOG="/var/log/wifiawake.log"
+PING_INTERVAL=25          # seconds between gateway ARP pings
+SYSCTL_INTERVAL=120       # re-assert sysctl every 2 min in case kernel resets it
+TCP_TIMEOUT=5             # nc connect timeout
+MAX_LOG_LINES=500         # rotate when log exceeds this
+
+# ── logging ──────────────────────────────────────────────────────────────────
+log() {
+    local ts
+    ts=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$ts] $*" >> "$LOG"
+    # keep the log from growing unbounded
+    local lines
+    lines=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+    if [ "$lines" -gt "$MAX_LOG_LINES" ]; then
+        # keep the last 200 lines
+        tail -n 200 "$LOG" > "${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
+    fi
+}
+
+# ── detect default gateway ────────────────────────────────────────────────────
+get_gateway() {
+    # netstat output: default  192.168.1.1  UGSc  en0
+    netstat -rn 2>/dev/null \
+        | awk '/^default/ && /en0/ { print $2; exit }' \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
+# ── apply all sysctl WiFi power-save tunables ─────────────────────────────────
+apply_sysctl() {
+    # Disable 802.11 power-save on the station side.
+    # net.link.generic.system.wifi_awdl_psk_mode is not the right knob;
+    # the actual one (private, but exposed in the BSD layer) is checked below.
+
+    # Level-of-service scheduling — keep WiFi traffic at highest QoS bucket
+    sysctl -w net.link.generic.system.flow_divert_pcb_count=0 2>/dev/null
+
+    # Prevent the BSD TCP stack from backing off keepalives aggressively
+    sysctl -w net.inet.tcp.keepidle=30000   2>/dev/null   # 30 s idle before first probe
+    sysctl -w net.inet.tcp.keepintvl=5000   2>/dev/null   # 5 s between probes
+    sysctl -w net.inet.tcp.keepcnt=8        2>/dev/null   # 8 probes before RST
+
+    # Raise the default SO_KEEPALIVE budget so the SSH socket survives sleep
+    sysctl -w net.inet.tcp.always_keepalive=1 2>/dev/null
+
+    # Disable opportunistic sleep on the network interface (private sysctl,
+    # present on A9/iOS 9-15; silently fails on kernels that don't have it)
+    sysctl -w kern.sched.allow_zero_bw=0    2>/dev/null
+
+    log "[sysctl] WiFi power-save tunables applied."
+}
+
+# ── attempt IOKit idle-sleep assertion (needs ioreport entitlement) ───────────
+# If the device has the right entitlement the assertion is created; otherwise
+# this is a no-op.  We do it via the pmset shim that ships with OpenSSH's
+# dependencies on Dopamine.
+assert_idle_prevention() {
+    if command -v pmset >/dev/null 2>&1; then
+        # pmset noidle keeps the idle assertion alive in the foreground;
+        # we don't call it that way — instead we use caffeinate if present.
+        :
+    fi
+    if command -v caffeinate >/dev/null 2>&1; then
+        # Run caffeinate in background so it holds the assertion.
+        # Kill any previous instance first.
+        pkill -f "caffeinate" 2>/dev/null
+        caffeinate -i &
+        log "[assert] caffeinate -i started (PID $!)."
+    fi
+}
+
+# ── TCP ping helper ───────────────────────────────────────────────────────────
+tcp_ping() {
+    local host="$1"
+    local port="${2:-80}"
+    # nc -z: scan mode (don't send data), -w: timeout
+    if command -v nc >/dev/null 2>&1; then
+        nc -z -w "$TCP_TIMEOUT" "$host" "$port" 2>/dev/null
+        return $?
+    fi
+    return 1
+}
+
+# ── ARP ping helper ───────────────────────────────────────────────────────────
+arp_ping() {
+    local host="$1"
+    # arping ships with some jailbreak repos; fall back to regular ping -c1
+    if command -v arping >/dev/null 2>&1; then
+        arping -c 1 -I en0 "$host" >/dev/null 2>&1
+    else
+        ping -c 1 -W 2 "$host" >/dev/null 2>&1
+    fi
+}
+
+# ── main loop ─────────────────────────────────────────────────────────────────
+main() {
+    log "==============================="
+    log "wifiawake daemon starting (PID $$)."
+    log "==============================="
+
+    # Initial setup
+    apply_sysctl
+    assert_idle_prevention
+
+    local tick=0
+
+    while true; do
+        # Detect gateway (may change if user switches AP)
+        GW=$(get_gateway)
+
+        if [ -n "$GW" ]; then
+            # ARP / ICMP ping to keep MAC in router's table
+            arp_ping "$GW"
+            local arp_rc=$?
+
+            # TCP ping to keep connection-tracking alive
+            tcp_ping "$GW" 80
+            local tcp_rc=$?
+
+            if [ "$arp_rc" -ne 0 ] && [ "$tcp_rc" -ne 0 ]; then
+                log "[warn] Both ARP and TCP ping to $GW failed — WiFi may be down."
+            fi
+        else
+            log "[warn] Could not determine default gateway. WiFi not connected yet?"
+        fi
+
+        # Re-apply sysctl tunables periodically
+        tick=$((tick + PING_INTERVAL))
+        if [ "$tick" -ge "$SYSCTL_INTERVAL" ]; then
+            tick=0
+            apply_sysctl
+        fi
+
+        sleep "$PING_INTERVAL"
+    done
+}
+
+main

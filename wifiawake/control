@@ -1,0 +1,9 @@
+Package: com.catling.wifiawake
+Name: wifiawake
+Depends: mobilesubstrate | me.lau.ellekit
+Version: 1.1.0
+Architecture: iphoneos-arm64
+Description: Keeps WiFi radio active when the screen is off. Hooks SpringBoard's idle-sleep mechanism and creates IOPMAssertions to prevent the WiFi chip entering PSM. Includes a LaunchDaemon that pings the gateway and applies TCP keep-alive sysctls. Fixes SSH becoming unreachable after a few hours.
+Maintainer: Cat-Ling
+Author: Cat-Ling
+Section: Tweaks
